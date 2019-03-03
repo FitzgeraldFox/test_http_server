@@ -45,20 +45,22 @@ class Server implements ServerInterface
             }
 
             echo $fetchArray[0] . " Request " . $file . "\n";
+            clearstatcache();
 
             if (!file_exists($file)) {
                 $output = "HTTP/1.1 404 NOT FOUND \r\n";
             } else {
+                $fileSize = filesize($file);
                 $fileContent = file_get_contents($file);
 
                 $headers = "HTTP/1.1 200 OK \r\n" .
-                    "Content-Length: " . filesize($file) . "\r\n" .
+                    "Content-Length: " . $fileSize . "\r\n" .
                     "Content-Type: " . mime_content_type($file) . " \r\n\r\n";
 
                 $output = $headers . $fileContent;
             }
 
-            socket_write($client, $output, strlen($output));
+            socket_write($client, $output);
             socket_close($client);
         }
     }
