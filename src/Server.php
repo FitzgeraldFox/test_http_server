@@ -2,66 +2,118 @@
 
 namespace App;
 
-require 'Interfaces/ServerInterface.php';
-
 use App\Interfaces\ServerInterface;
+use React\EventLoop\LoopInterface;
+
+require 'Interfaces/ServerInterface.php';
 
 class Server implements ServerInterface
 {
+    const FILE_DIRECTORY = 'files';
+
     /**
      * @var resource
      */
-    protected $sock;
+    protected $socketServer;
+
+    /**
+     * @var LoopInterface
+     */
+    protected $eventLoop;
     
-    public function __construct(int $port)
+    public function __construct(LoopInterface $loop, $socketServer, int $port)
     {
-        $this->sock = socket_create_listen($port);
+        $this->eventLoop = $loop;
+        $this->socketServer = $socketServer;
         echo "\n Listening On port $port For Connection... \n\n";
     }
 
-    public function listen(): void
+    /**
+     * @param $conn
+     * @return array
+     */
+    protected function getRequestHeaders($conn): array
     {
-        while (1) {
+        $input = fgets($conn);
+        $incoming = explode("\r\n", $input);
+        return explode(" ", $incoming[0]);
+    }
 
-            $client = socket_accept($this->sock);
+    /**
+     * @throws \Exception
+     */
+    public function handleRequest(): void
+    {
+        $this->eventLoop->addReadStream($this->socketServer, function ($socketServer) {
 
-            $input = socket_read($client, 1024);
+            $conn = stream_socket_accept($socketServer);
 
-            $incoming = explode("\r\n", $input);
+            $requestHeaders = $this->getRequestHeaders($conn);
 
-            $fetchArray = explode(" ", $incoming[0]);
-
-            if ($fetchArray[0] !== 'GET') {
-                $output = "HTTP/1.1 404 NOT FOUND \r\n";
-                socket_write($client, $output, strlen($output));
-                socket_close($client);
-            }
-
-            $file = $fetchArray[1];
-
-            if ($file != "/") {
-                $filearray = explode("/", $file);
-                $file = $filearray[1];
-            }
-
-            echo $fetchArray[0] . " Request " . $file . "\n";
-            clearstatcache();
-
-            if (!file_exists($file)) {
-                $output = "HTTP/1.1 404 NOT FOUND \r\n";
+            if ($requestHeaders[0] !== 'GET') {
+                $responseString = "HTTP/1.1 404 NOT FOUND Connection: closed \r\n\r\n";
             } else {
-                $fileSize = filesize($file);
-                $fileContent = file_get_contents($file);
-
-                $headers = "HTTP/1.1 200 OK \r\n" .
-                    "Content-Length: " . $fileSize . "\r\n" .
-                    "Content-Type: " . mime_content_type($file) . " \r\n\r\n";
-
-                $output = $headers . $fileContent;
+                $responseString = $this->getFileResponseHeadersString($requestHeaders);
             }
 
-            socket_write($client, $output);
-            socket_close($client);
+            $this->sendResponse($conn, $responseString);
+
+        });
+    }
+
+    /**
+     * @param array $requestHeaders
+     * @return string
+     */
+    protected function getFileResponseHeadersString(array $requestHeaders): ?string
+    {
+        clearstatcache();
+
+        $fileName = $this->getFileName($requestHeaders);
+
+        $filePath = self::FILE_DIRECTORY. '/' . $fileName;
+
+        if ($fileName === null || !file_exists($filePath)) {
+            return "HTTP/1.1 404 NOT FOUND Connection: closed \r\n\r\n";
+        } else {
+            $fileSize = filesize($filePath);
+            $fileContent = file_get_contents($filePath);
+
+            $headers = "HTTP/1.1 200 OK" .
+                " Connection: closed " .
+                " Content-Length: " . $fileSize .
+                " Content-Type: " . mime_content_type($filePath) . " \r\n\r\n";
+
+            return $headers . $fileContent;
         }
+    }
+
+    /**
+     * @param array $fetchArray
+     * @return string|null
+     */
+    protected function getFileName(array $fetchArray): ?string
+    {
+        $filePath = $fetchArray[1];
+
+        if ($filePath != "/" && strpos($filePath, '../') === false) {
+            return explode("/", $filePath)[1];
+        }
+
+        return null;
+    }
+
+    /**
+     * @param $socketConnection
+     * @param string $responseString
+     * @throws \Exception
+     */
+    protected function sendResponse($socketConnection, string $responseString): void
+    {
+        $this->eventLoop->addWriteStream($socketConnection, function ($conn) use (&$responseString) {
+            fwrite($conn, $responseString);
+            fclose($conn);
+            $this->eventLoop->removeWriteStream($conn);
+        });
     }
 }
